@@ -1,9 +1,20 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+// Input validation schemas
+const messageSchema = z.object({
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().min(1).max(4000),
+});
+
+const requestSchema = z.object({
+  messages: z.array(messageSchema).min(1).max(50),
+});
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -11,17 +22,29 @@ serve(async (req) => {
   }
 
   try {
-    const { messages } = await req.json();
+    // Parse and validate request body
+    const body = await req.json();
+    const parseResult = requestSchema.safeParse(body);
+    
+    if (!parseResult.success) {
+      console.error("Invalid request format:", parseResult.error.message);
+      return new Response(
+        JSON.stringify({ error: "Invalid request format" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    
+    const { messages } = parseResult.data;
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     
     if (!LOVABLE_API_KEY) {
       console.error("LOVABLE_API_KEY is not configured");
-      throw new Error("LOVABLE_API_KEY is not configured");
+      throw new Error("Service configuration error");
     }
 
-    console.log("Sending request to Lovable AI with", messages.length, "messages");
+    console.log("Processing chat request with", messages.length, "messages");
 
-const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -96,7 +119,7 @@ Be helpful, concise, and action-oriented. Use specific numbers when making predi
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("AI gateway error:", response.status, errorText);
+      console.error("AI gateway error:", response.status);
       
       if (response.status === 429) {
         return new Response(
@@ -111,11 +134,11 @@ Be helpful, concise, and action-oriented. Use specific numbers when making predi
         );
       }
       
-      throw new Error(`AI gateway error: ${response.status}`);
+      throw new Error("AI service temporarily unavailable");
     }
 
     const data = await response.json();
-    console.log("Received response from AI");
+    console.log("Chat response generated successfully");
     
     const assistantMessage = data.choices?.[0]?.message?.content || "I apologize, but I couldn't generate a response. Please try again.";
 
@@ -124,10 +147,9 @@ Be helpful, concise, and action-oriented. Use specific numbers when making predi
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
-    console.error("Chat function error:", error);
-    const errorMessage = error instanceof Error ? error.message : "An error occurred";
+    console.error("Chat function error occurred");
     return new Response(
-      JSON.stringify({ error: errorMessage }),
+      JSON.stringify({ error: "An error occurred. Please try again." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
