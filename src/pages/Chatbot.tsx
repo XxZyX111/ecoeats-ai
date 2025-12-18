@@ -3,13 +3,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Leaf, Send, LogOut, Bot, User, Loader2, Plus, MessageSquare, Trash2, Menu, X } from "lucide-react";
+import { Leaf, Send, LogOut, Bot, User, Loader2, Plus, MessageSquare, Trash2, Menu, X, Paperclip, File, Image, FileText, FileCode, Video } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+
+interface FileAttachment {
+  file: File;
+  preview?: string;
+  type: "image" | "video" | "document" | "code" | "other";
+}
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+  attachments?: FileAttachment[];
 }
 
 interface Conversation {
@@ -18,6 +25,25 @@ interface Conversation {
   created_at: string;
   updated_at: string;
 }
+
+const getFileType = (file: File): FileAttachment["type"] => {
+  const mime = file.type;
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.includes("pdf") || mime.includes("document") || mime.includes("word") || mime.includes("excel") || mime.includes("powerpoint")) return "document";
+  if (mime.includes("text") || file.name.match(/\.(js|ts|tsx|jsx|py|java|c|cpp|html|css|json|xml|yaml|yml|md|sql)$/i)) return "code";
+  return "other";
+};
+
+const getFileIcon = (type: FileAttachment["type"]) => {
+  switch (type) {
+    case "image": return Image;
+    case "video": return Video;
+    case "document": return FileText;
+    case "code": return FileCode;
+    default: return File;
+  }
+};
 
 const Chatbot = () => {
   const navigate = useNavigate();
@@ -29,7 +55,9 @@ const Chatbot = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -194,7 +222,7 @@ const Chatbot = () => {
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading || !userId) return;
+    if ((!input.trim() && attachments.length === 0) || isLoading || !userId) return;
 
     let conversationId = currentConversationId;
 
@@ -205,13 +233,19 @@ const Chatbot = () => {
       setCurrentConversationId(conversationId);
     }
 
-    const userMessage: Message = { role: "user", content: input };
+    const messageContent = input.trim() || (attachments.length > 0 ? `[Attached ${attachments.length} file(s)]` : "");
+    const userMessage: Message = { 
+      role: "user", 
+      content: messageContent,
+      attachments: attachments.length > 0 ? [...attachments] : undefined
+    };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setAttachments([]);
     setIsLoading(true);
 
     // Save user message
-    await saveMessage(conversationId, "user", input);
+    await saveMessage(conversationId, "user", messageContent);
 
     // Update title if first message
     if (messages.length === 0) {
@@ -250,6 +284,48 @@ const Chatbot = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const newAttachments: FileAttachment[] = [];
+    
+    Array.from(files).forEach((file) => {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error(`${file.name} is too large (max 10MB)`);
+        return;
+      }
+
+      const attachment: FileAttachment = {
+        file,
+        type: getFileType(file),
+      };
+
+      if (attachment.type === "image") {
+        attachment.preview = URL.createObjectURL(file);
+      }
+
+      newAttachments.push(attachment);
+    });
+
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => {
+      const attachment = prev[index];
+      if (attachment.preview) {
+        URL.revokeObjectURL(attachment.preview);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   return (
@@ -406,6 +482,33 @@ const Chatbot = () => {
                         : "bg-muted text-foreground"
                     }`}
                   >
+                    {message.attachments && message.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {message.attachments.map((attachment, i) => {
+                          const FileIcon = getFileIcon(attachment.type);
+                          return attachment.preview ? (
+                            <img
+                              key={i}
+                              src={attachment.preview}
+                              alt={attachment.file.name}
+                              className="max-w-[200px] max-h-[150px] rounded-lg object-cover"
+                            />
+                          ) : (
+                            <div
+                              key={i}
+                              className={`flex items-center gap-2 px-2 py-1 rounded ${
+                                message.role === "user" ? "bg-primary-foreground/20" : "bg-background"
+                              }`}
+                            >
+                              <FileIcon className="w-4 h-4" />
+                              <span className="text-xs truncate max-w-[100px]">
+                                {attachment.file.name}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     <p className="whitespace-pre-wrap">{message.content}</p>
                   </div>
                   {message.role === "user" && (
@@ -438,26 +541,81 @@ const Chatbot = () => {
 
         {/* Input Area */}
         <footer className="bg-card border-t border-border p-4">
-          <form
-            onSubmit={sendMessage}
-            className="max-w-4xl mx-auto flex gap-3"
-          >
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about food waste prediction..."
-              className="flex-1"
-              disabled={isLoading}
-            />
-            <Button
-              type="submit"
-              variant="hero"
-              size="icon"
-              disabled={!input.trim() || isLoading}
-            >
-              <Send className="w-5 h-5" />
-            </Button>
-          </form>
+          <div className="max-w-4xl mx-auto">
+            {/* Attachment Preview */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {attachments.map((attachment, index) => {
+                  const FileIcon = getFileIcon(attachment.type);
+                  return (
+                    <div
+                      key={index}
+                      className="relative group bg-muted rounded-lg p-2 flex items-center gap-2"
+                    >
+                      {attachment.preview ? (
+                        <img
+                          src={attachment.preview}
+                          alt={attachment.file.name}
+                          className="w-10 h-10 object-cover rounded"
+                        />
+                      ) : (
+                        <FileIcon className="w-6 h-6 text-muted-foreground" />
+                      )}
+                      <span className="text-sm text-foreground truncate max-w-[120px]">
+                        {attachment.file.name}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="w-5 h-5 absolute -top-1 -right-1 bg-destructive text-destructive-foreground rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => removeAttachment(index)}
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            
+            <form onSubmit={sendMessage} className="flex gap-2 items-center">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                className="hidden"
+                multiple
+                accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.js,.ts,.tsx,.jsx,.py,.java,.c,.cpp,.html,.css,.json,.xml,.yaml,.yml,.md,.sql"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading}
+                className="flex-shrink-0"
+              >
+                <Paperclip className="w-5 h-5" />
+              </Button>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask about food waste prediction..."
+                className="flex-1"
+                disabled={isLoading}
+              />
+              <Button
+                type="submit"
+                variant="hero"
+                size="icon"
+                disabled={(!input.trim() && attachments.length === 0) || isLoading}
+                className="flex-shrink-0"
+              >
+                <Send className="w-5 h-5" />
+              </Button>
+            </form>
+          </div>
         </footer>
       </div>
     </div>
